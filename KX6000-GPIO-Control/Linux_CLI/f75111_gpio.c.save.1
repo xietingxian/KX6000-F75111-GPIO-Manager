@@ -1,0 +1,29 @@
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/fs.h>
+#include <linux/cdev.h>
+#include <linux/device.h>
+#include <linux/uaccess.h>
+#include <linux/ioport.h>
+#include <linux/io.h>
+#include <linux/delay.h>
+
+#define DEVICE_NAME "f75111_gpio"
+#define CLASS_NAME "f75111"
+#define CONFIG_REG_OFFSET 0x00
+#define CHIP_ID_REG 0x00
+#define CHIP_REV_REG 0x01
+
+// SMBus 配置
+#define SMBUS_BASE 0x400
+#define SMBUS_STATUS (SMBUS_BASE + 0)
+#define SMBUS_CTRL (SMBUS_BASE + 2)
+#define SMBUS_CMD (SMBUS_BASE + 3)
+#define SMBUS_SLV (SMBUS_BASE + 4)
+#define SMBUS_DATA (SMBUS_BASE + 5)
+#define F75111_SLAVE_ADR 0x9C
+
+// GPIO 寄存器偏移量
+#define GPIO_SET1_DIR_OFFSET 0x10
+#define GPIO_SET2_DIR_OFFSET 0x20
+#define GPIO_SET1_OUTPUT_DATA_OFFSET 0x11

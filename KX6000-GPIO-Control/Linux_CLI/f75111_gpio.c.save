@@ -1,0 +1,187 @@
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/fs.h>
+#include <linux/cdev.h>
+#include <linux/device.h>
+#include <linux/uaccess.h>
+#include <linux/ioport.h>
+#include <linux/io.h>
+#include <linux/delay.h>
+
+#define DEVICE_NAME "f75111_gpio"
+#define CLASS_NAME "f75111"
+#define CONFIG_OFFSET 0x00
+#define CHIP_ID_REG 0x00
+#define CHIP_REV_REG 0x01
+
+// SMBus 配置
+#define SMBUS_BASE 0x400
+#define SMBUS_STATUS (SMBUS_BASE + 0)
+#define SMBUS_CTRL (SMBUS_BASE + 2)
+#define SMBUS_CMD (SMBUS_BASE + 3)
+#define SMBUS_SLV (SMBUS_BASE + 4)
+#define SMBUS_DATA (SMBUS_BASE + 5)
+#define F75111_SLAVE_ADR 0x9C
+
+// GPIO 寄存器偏移量
+#define GPIO_SET1_DIR_OFFSET 0x10
+#define GPIO_SET2_DIR_OFFSET 0x20
+#define GPIO_SET1_OUTPUT_DATA_OFFSET 0x11
+#define GPIO_SET2_OUTPUT_DATA_OFFSET 0x21
+#define GPIO_SET1_INPUT_DATA_OFFSET 0x12
+#define GPIO_SET2_INPUT_DATA_OFFSET 0x22
+
+// IOCTL 命令
+#define IOCTL_SET_DIRECTION _IOW('k', 1, int)
+#define IOCTL_SET_OUTPUT _IOW('k', 2, int[3])
+#define IOCTL_GET_INPUT _IOR('k', 3, int[3])
+
+static int major;
+static struct class *f75111_class = NULL;
+static struct device *f75111_device = NULL;
+static struct cdev f75111_cdev;
+
+static int port_region_requested = 0;
+
+// SMBus 访问函数
+static void write_smbus_byte(u8 reg, u8 value) {
+    outb(0x42, SMBUS_STATUS); // 清除状态
+    outb(reg, SMBUS_CMD);     // 设置寄存器偏移量
+    outb(F75111_SLAVE_ADR, SMBUS_SLV); // 设置设备地址
+    outb(value, SMBUS_DATA);  // 写入数据
+    outb(0x48, SMBUS_CTRL);   // 触发写操作
+    udelay(1000); // 等待操作完成
+}
+
+static u8 read_smbus_byte(u8 reg) {
+    outb(0x42, SMBUS_STATUS); // 清除状态
+    outb(reg, SMBUS_CMD);     // 设置寄存器偏移量
+    outb(F75111_SLAVE_ADR | 0x01, SMBUS_SLV); // 设置读地址
+    outb(0x48, SMBUS_CTRL);   // 触发读操作
+    udelay(2000); // 等待操作完成
+    return inb(SMBUS_DATA);   // 读取数据
+}
+
+// 文件操作函数
+static long f75111_ioctl(struct file *file, unsigned int cmd, unsigned long arg) {
+    int data[3];
+    
+    switch (cmd) {
+        case IOCTL_SET_DIRECTION: {
+            int direction = (int)arg;
+            
+            if (direction == 0) { // 输入模式
+                write_smbus_byte(GPIO_SET1_DIR_OFFSET, 0x00);
+                write_smbus_byte(GPIO_SET2_DIR_OFFSET, 0x00);
+                // 设置输出为低电平
+                write_smbus_byte(GPIO_SET1_OUTPUT_DATA_OFFSET, 0x00);
+                write_smbus_byte(GPIO_SET2_OUTPUT_DATA_OFFSET, 0x00);
+            } else { // 输出模式
+                write_smbus_byte(GPIO_SET1_DIR_OFFSET, 0xFF);
+                write_smbus_byte(GPIO_SET2_DIR_OFFSET, 0xFF);
+            }
+            return 0;
+        }
+        
+        case IOCTL_SET_OUTPUT:
+            if (copy_from_user(data, (int __user *)arg, sizeof(data)))
+                return -EFAULT;
+                
+            write_smbus_byte(data[0] == 0 ? GPIO_SET1_OUTPUT_DATA_OFFSET : GPIO_SET2_OUTPUT_DATA_OFFSET,
+                             data[1]);
+            return 0;
+            
+        case IOCTL_GET_INPUT:
+            data[0] = read_smbus_byte(GPIO_SET1_INPUT_DATA_OFFSET);
+            data[1] = read_smbus_byte(GPIO_SET2_INPUT_DATA_OFFSET);
+            
+            if (copy_to_user((int __user *)arg, data, sizeof(data)))
+                return -EFAULT;
+                
+            return 0;
+            
+        default:
+            return -ENOTTY;
+    }
+}
+
+static struct file_operations fops = {
+    .unlocked_ioctl = f75111_ioctl,
+    .owner = THIS_MODULE,
+};
+
+// 模块初始化和退出
+static int __init f75111_init(void) {
+    // 请求 I/O 端口区域
+    if (!request_region(SMBUS_BASE, 16, "f75111_smbus")) {
+        printk(KERN_ALERT "Failed to request I/O ports\n");
+        return -EBUSY;
+    }
+    port_region_requested = 1;
+    
+    // 注册字符设备
+    if (alloc_chrdev_region(&major, 0, 1, DEVICE_NAME) < 0) {
+        printk(KERN_ALERT "Failed to allocate char device\n");
+        goto fail_region;
+    }
+    
+    // 创建设备类
+    f75111_class = class_create(THIS_MODULE, CLASS_NAME);
+    if (IS_ERR(f75111_class)) {
+        printk(KERN_ALERT "Failed to create device class\n");
+        goto fail_class;
+    }
+    
+    // 创建设备
+    f75111_device = device_create(f75111_class, NULL, major, NULL, DEVICE_NAME);
+    if (IS_ERR(f75111_device)) {
+        printk(KERN_ALERT "Failed to create device\n");
+        goto fail_device;
+    }
+    
+    // 初始化字符设备
+    cdev_init(&f75111_cdev, &fops);
+    if (cdev_add(&f75111_cdev, major, 1) < 0) {
+        printk(KERN_ALERT "Failed to add char device\n");
+        goto fail_cdev;
+    }
+    
+    printk(KERN_INFO "F75111 GPIO module loaded\n");
+    return 0;
+    
+fail_cdev:
+    device_destroy(f75111_class, major);
+fail_device:
+    class_destroy(f75111_class);
+fail_class:
+    unregister_chrdev_region(major, 1);
+fail_region:
+    if (port_region_requested) {
+        release_region(SMBUS_BASE, 16);
+        port_region_requested = 0;
+    }
+    return -1;
+}
+
+static void __exit f75111_exit(void) {
+    // 清理资源
+    device_destroy(f75111_class, major);
+    class_destroy(f75111_class);
+    unregister_chrdev_region(major, 1);
+    cdev_del(&f75111_cdev);
+    
+    if (port_region_requested) {
+        release_region(SMBUS_BASE, 16);
+        port_region_requested = 0;
+    }
+    
+    printk(KERN_INFO "F75111 GPIO module unloaded\n");
+}
+
+module_init(f75111_init);
+module_exit(f75111_exit);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Your Name");
+MODULE_DESCRIPTION("F75111 GPIO Control Module");
+MODULE_VERSION("1.0");
