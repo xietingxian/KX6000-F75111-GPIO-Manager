@@ -16,6 +16,9 @@
     *   可视化界面设置 8 路 GPIO 的 Input/Output 模式。
     *   实时读取电平状态与手动控制高低电平输出。
     *   集成 WinRing0 库实现 Ring3 到 Ring0 的端口访问。
+## 📸 运行截图
+<img width="387" height="420" alt="image" src="https://github.com/user-attachments/assets/c847aa91-d8af-4a0f-bac7-ef3a18f8fb24" />
+
 
 ### 📂 2. Linux 版本 (Driver & CLI)
 *   **路径：** `/Linux_Driver`
@@ -25,6 +28,8 @@
     *   **内核驱动 (`.ko`)：** 编写了 Linux 字符设备驱动，创建 `/dev/f75111_gpio` 设备节点。
     *   **命令行工具：** 提供 `gpio-mode`、`gpio-set` 等指令工具。
     *   **C API 封装：** 提供 `gpio_api.h` 供上层应用开发调用。
+## 📸 运行截图
+<img width="865" height="388" alt="image" src="https://github.com/user-attachments/assets/12d58bc5-ff03-43eb-b149-f5cb24f11d4d" />
 
 ---
 
